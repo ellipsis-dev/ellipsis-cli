@@ -70,7 +70,7 @@ async function runInit(): Promise<void> {
   console.log()
   await askYes('Proceed to Step 1?')
 
-  console.log(`\nStep 1: ${INSTALL_STEPS[0]}\n`)
+  console.log(`\nStep 1: ${INSTALL_STEPS[0].title}\n`)
 
   const email = await ask('What is your work email?', validateEmail)
   const company = await ask(
