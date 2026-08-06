@@ -1,0 +1,108 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (without leading v), e.g. 0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Stamp version into the binary
+        # package.json is the single source of truth — src/lib/constants.ts reads
+        # pkg.version, which bun inlines at build time. This MUST match the tag
+        # because the Homebrew `test do` block asserts `ellipsis --version` == version.
+        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build platform binaries
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for t in darwin-arm64 darwin-x64 linux-x64 linux-arm64; do
+            echo "::group::build $t"
+            bun build src/cli.ts --compile --target=bun-"$t" --outfile ellipsis
+            tar -czf "dist/ellipsis-$t.tar.gz" ellipsis
+            rm -f ellipsis
+            echo "::endgroup::"
+          done
+
+      - name: Compute checksums
+        id: sha
+        run: |
+          set -euo pipefail
+          cd dist
+          for t in darwin-arm64 darwin-x64 linux-x64 linux-arm64; do
+            sum=$(sha256sum "ellipsis-$t.tar.gz" | cut -d' ' -f1)
+            echo "${t//-/_}=$sum" >> "$GITHUB_OUTPUT"
+          done
+          sha256sum *.tar.gz > checksums.txt
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          files: |
+            dist/*.tar.gz
+            dist/checksums.txt
+
+      - name: Check out the Homebrew tap
+        uses: actions/checkout@v7
+        with:
+          repository: ellipsis-dev/homebrew-cli
+          # Write-scoped deploy key for the tap repo only (the workflow's own
+          # GITHUB_TOKEN can't reach a second repo). checkout configures the SSH
+          # remote + key, so the push step below authenticates over SSH.
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          path: tap
+
+      - name: Regenerate the formula
+        run: |
+          set -euo pipefail
+          sed \
+            -e "s|__VERSION__|${{ steps.version.outputs.version }}|g" \
+            -e "s|__SHA_DARWIN_ARM64__|${{ steps.sha.outputs.darwin_arm64 }}|g" \
+            -e "s|__SHA_DARWIN_X64__|${{ steps.sha.outputs.darwin_x64 }}|g" \
+            -e "s|__SHA_LINUX_ARM64__|${{ steps.sha.outputs.linux_arm64 }}|g" \
+            -e "s|__SHA_LINUX_X64__|${{ steps.sha.outputs.linux_x64 }}|g" \
+            .github/homebrew/ellipsis.rb.tmpl > tap/Formula/ellipsis.rb
+
+      - name: Commit and push the formula
+        run: |
+          set -euo pipefail
+          cd tap
+          git config user.name "ellipsis-bot"
+          git config user.email "bot@ellipsis.dev"
+          git add Formula/ellipsis.rb
+          if git diff --cached --quiet; then
+            echo "Formula unchanged; nothing to push."
+          else
+            git commit -m "ellipsis ${{ steps.version.outputs.version }}"
+            git push
+          fi
