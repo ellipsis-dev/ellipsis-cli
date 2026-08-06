@@ -5,6 +5,7 @@ import { INSTALL_STEPS, renderChecklist } from '../lib/checklist'
 import { VERSION } from '../lib/constants'
 import { writeCredentials } from '../lib/credentials'
 import { createAppViaManifest, writeGithubApp } from '../lib/github_app'
+import { currentDeploymentId } from '../lib/paths'
 import { ask, askYes, closePrompts, openPrompts } from '../lib/prompt'
 import { readState, writeState, type InstallState } from '../lib/state'
 import {
@@ -58,16 +59,17 @@ export function registerInit(program: Command): void {
 // at the first incomplete step, reading answers from install state — a step
 // never re-asks what an earlier step already learned.
 async function runInit(): Promise<void> {
+  const deploymentId = currentDeploymentId()
   const state = readState()
 
-  if (!state) {
+  if (!deploymentId || !state) {
     console.log(WELCOME)
     console.log('Here is what we will do together:\n')
     console.log(renderChecklist(0))
     console.log()
     await askYes('Are you ready to get started?')
     const fresh = await stepStartTrial()
-    if (fresh) await continueFrom(fresh)
+    if (fresh) await continueFrom(fresh.deploymentId, fresh.state)
     return
   }
 
@@ -78,18 +80,18 @@ async function runInit(): Promise<void> {
     console.log('Your install is complete.')
     return
   }
-  await continueFrom(state)
+  await continueFrom(deploymentId, state)
 }
 
 /** Run steps from the first incomplete one; stop at the first not-yet-built step. */
-async function continueFrom(state: InstallState): Promise<void> {
+async function continueFrom(deploymentId: string, state: InstallState): Promise<void> {
   let current = state
   while (current.completed_steps < INSTALL_STEPS.length) {
     const next = current.completed_steps // 0-indexed
     await askYes(`Continue with Step ${next + 1} (${INSTALL_STEPS[next].title})?`)
     switch (next) {
       case 1:
-        current = await stepConnectGithub(current)
+        current = await stepConnectGithub(deploymentId, current)
         break
       default:
         console.log(
@@ -101,7 +103,7 @@ async function continueFrom(state: InstallState): Promise<void> {
 }
 
 /** Step 1: collect identity, mint the trial, persist credential + state. */
-async function stepStartTrial(): Promise<InstallState | null> {
+async function stepStartTrial(): Promise<{ deploymentId: string; state: InstallState } | null> {
   console.log(`\nStep 1: ${INSTALL_STEPS[0].title}\n`)
 
   const email = await ask('What is your work email?', validateEmail)
@@ -136,6 +138,7 @@ async function stepStartTrial(): Promise<InstallState | null> {
   console.log()
 
   console.log('Starting your free trial...')
+  let deploymentId: string
   try {
     const res = await registerInstall({
       email,
@@ -145,6 +148,7 @@ async function stepStartTrial(): Promise<InstallState | null> {
       github_org: githubOrg,
       cli_version: VERSION,
     })
+    deploymentId = res.install_id
     writeCredentials({
       install_id: res.install_id,
       install_credential: res.install_credential,
@@ -172,11 +176,11 @@ async function stepStartTrial(): Promise<InstallState | null> {
     domain,
     completed_steps: 1,
   }
-  writeState(state)
+  writeState(deploymentId, state)
   console.log('Trial active: 7 days.\n')
   console.log(renderChecklist(1))
   console.log()
-  return state
+  return { deploymentId, state }
 }
 
 function openBrowser(url: string): void {
@@ -188,7 +192,7 @@ function openBrowser(url: string): void {
 }
 
 /** Step 2: create their GitHub App via the manifest flow. All inputs come from state. */
-async function stepConnectGithub(state: InstallState): Promise<InstallState> {
+async function stepConnectGithub(deploymentId: string, state: InstallState): Promise<InstallState> {
   const { github_org: org, domain } = state
   const appName = `Ellipsis for ${org}`
 
@@ -214,7 +218,7 @@ async function stepConnectGithub(state: InstallState): Promise<InstallState> {
     },
     { openBrowser },
   )
-  writeGithubApp(app)
+  writeGithubApp(deploymentId, app)
   console.log(`\nCreated ${app.name} (app ${app.app_id}, owned by ${app.owner_login}).`)
   console.log(
     'Credentials saved locally — the deploy step moves them into your AWS Secrets Manager.\n',
@@ -226,7 +230,7 @@ async function stepConnectGithub(state: InstallState): Promise<InstallState> {
   await askYes(`Done installing? (${installUrl})`)
 
   const updated: InstallState = { ...state, completed_steps: 2 }
-  writeState(updated)
+  writeState(deploymentId, updated)
   console.log()
   console.log(renderChecklist(2))
   console.log()

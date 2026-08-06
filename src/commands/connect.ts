@@ -1,5 +1,6 @@
 import type { Command } from 'commander'
 import { readGithubApp } from '../lib/github_app'
+import { currentDeploymentId } from '../lib/paths'
 import { readState } from '../lib/state'
 
 // `ellipsis init` is the wizard and the normal path. `connect` exists only to
@@ -12,13 +13,14 @@ export function registerConnect(program: Command): void {
     .command('github')
     .description('Show GitHub App connection status')
     .action(() => {
+      const deploymentId = currentDeploymentId()
       const state = readState()
-      if (!state) {
+      if (!deploymentId || !state) {
         console.log('No install in progress. Run `ellipsis init` to get started.')
         process.exitCode = 1
         return
       }
-      const app = readGithubApp()
+      const app = readGithubApp(deploymentId)
       if (app) {
         console.log(
           `Connected: ${app.name} (app ${app.app_id}, owned by ${app.owner_login}).\n` +

@@ -1,11 +1,10 @@
-import * as fs from 'node:fs'
-import * as os from 'node:os'
-import * as path from 'node:path'
+import { currentDeploymentId, readDeploymentFile, writeDeploymentFile } from './paths'
 
 // The install state: every answer the wizard has collected and how far it has
-// gotten. Written after each completed step so `ellipsis init` is resumable —
-// later steps read answers from here and never re-ask. Credentials live in
-// their own files (credentials.json, github-app.json), not here.
+// gotten, at ~/.ellipsis/deployments/{id}/install-state.json. Written after
+// each completed step so `ellipsis init` is resumable — later steps read
+// answers from here and never re-ask. Key material lives elsewhere (see
+// paths.ts for the layout).
 export interface InstallState {
   // Step 1 answers.
   email: string
@@ -18,18 +17,21 @@ export interface InstallState {
   completed_steps: number
 }
 
-const STATE_DIR = path.join(os.homedir(), '.ellipsis')
-const STATE_PATH = path.join(STATE_DIR, 'install-state.json')
+const REL_PATH = 'install-state.json'
 
 export function readState(): InstallState | null {
+  const id = currentDeploymentId()
+  if (!id) return null
+  const raw = readDeploymentFile(id, REL_PATH)
+  if (!raw) return null
   try {
-    return JSON.parse(fs.readFileSync(STATE_PATH, 'utf8')) as InstallState
+    return JSON.parse(raw) as InstallState
   } catch {
     return null
   }
 }
 
-export function writeState(state: InstallState): void {
-  fs.mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
-  fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2) + '\n', { mode: 0o600 })
+/** State is deployment-scoped: it can only be written once Step 1 minted the id. */
+export function writeState(deploymentId: string, state: InstallState): void {
+  writeDeploymentFile(deploymentId, REL_PATH, JSON.stringify(state, null, 2) + '\n')
 }

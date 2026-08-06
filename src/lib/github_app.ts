@@ -1,7 +1,5 @@
-import * as fs from 'node:fs'
 import * as http from 'node:http'
-import * as os from 'node:os'
-import * as path from 'node:path'
+import { listDeploymentDir, readDeploymentFile, writeDeploymentFile } from './paths'
 
 // GitHub App creation via the app-manifest flow. There is no REST endpoint for
 // creating org-owned apps; the flow is: serve a self-submitting form that POSTs
@@ -171,19 +169,38 @@ async function exchangeManifestCode(code: string): Promise<CreatedGithubApp> {
   }
 }
 
-// Created-app credentials live beside the install credential until the deploy
-// step writes them into the customer's Secrets Manager.
-const APP_PATH = path.join(os.homedir(), '.ellipsis', 'github-app.json')
+// Created-app credentials live under the deployment until the deploy step
+// writes them into the customer's Secrets Manager:
+//   deployments/{id}/github/apps/{app_id}/secret.pem   the private key, alone
+//   deployments/{id}/github/apps/{app_id}/app.json     everything else
+// The key gets its own file so it can be shredded independently after the
+// deploy step moves it, leaving the harmless metadata behind.
 
-export function writeGithubApp(app: CreatedGithubApp): string {
-  fs.mkdirSync(path.dirname(APP_PATH), { recursive: true, mode: 0o700 })
-  fs.writeFileSync(APP_PATH, JSON.stringify(app, null, 2) + '\n', { mode: 0o600 })
-  return APP_PATH
+function appDir(appId: number): string {
+  return `github/apps/${appId}`
 }
 
-export function readGithubApp(): CreatedGithubApp | null {
+export function writeGithubApp(deploymentId: string, app: CreatedGithubApp): string {
+  const { pem, ...metadata } = app
+  const pemPath = writeDeploymentFile(deploymentId, `${appDir(app.app_id)}/secret.pem`, pem)
+  writeDeploymentFile(
+    deploymentId,
+    `${appDir(app.app_id)}/app.json`,
+    JSON.stringify(metadata, null, 2) + '\n',
+  )
+  return pemPath
+}
+
+export function readGithubApp(deploymentId: string): CreatedGithubApp | null {
+  const appIds = listDeploymentDir(deploymentId, 'github/apps')
+  if (appIds.length === 0) return null
+  // One app per deployment today; take the newest if several exist.
+  const appId = appIds.sort().at(-1)!
+  const metaRaw = readDeploymentFile(deploymentId, `github/apps/${appId}/app.json`)
+  const pem = readDeploymentFile(deploymentId, `github/apps/${appId}/secret.pem`)
+  if (!metaRaw || pem === null) return null
   try {
-    return JSON.parse(fs.readFileSync(APP_PATH, 'utf8')) as CreatedGithubApp
+    return { ...(JSON.parse(metaRaw) as Omit<CreatedGithubApp, 'pem'>), pem }
   } catch {
     return null
   }
