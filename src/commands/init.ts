@@ -63,12 +63,10 @@ async function runInit(): Promise<void> {
   }
 
   console.log(WELCOME)
-  await askYes('Are you ready to get started?')
-
-  console.log('\nHere is what we will do together:\n')
+  console.log('Here is what we will do together:\n')
   console.log(renderChecklist(0))
   console.log()
-  await askYes('Proceed to Step 1?')
+  await askYes('Are you ready to get started?')
 
   console.log(`\nStep 1: ${INSTALL_STEPS[0].title}\n`)
 
