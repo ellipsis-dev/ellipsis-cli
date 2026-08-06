@@ -44,8 +44,7 @@ export const INSTALL_STEPS: InstallStep[] = [
 export function renderChecklist(completedThrough: number): string {
   const lines = INSTALL_STEPS.map((step, i) => {
     const box = i < completedThrough ? '[x]' : '[ ]'
-    const head = `  ${box} Step ${i + 1}: ${step.title} (${step.minutes})`
-    return `${head}\n        ${step.detail}`
+    return `  ${box} Step ${i + 1}: ${step.title} (${step.minutes})`
   })
   return lines.join('\n')
 }
