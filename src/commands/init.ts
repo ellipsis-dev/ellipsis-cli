@@ -86,6 +86,15 @@ async function runInit(): Promise<void> {
       ' one for now. You can add more later.',
     validateGithubOrg,
   )
+  // The next step creates an org-owned GitHub App, which only an org owner can
+  // do — recruit that person now, not after the deploy.
+  console.log(
+    `The next step creates a GitHub App owned by ${githubOrg}, which requires an` +
+      ` organization owner (check https://github.com/orgs/${githubOrg}/people and` +
+      ' filter by role: Owner).\n',
+  )
+  await askYes(`Are you an owner of ${githubOrg}, or is one with you?`)
+  console.log()
 
   console.log('Starting your free trial...')
   try {

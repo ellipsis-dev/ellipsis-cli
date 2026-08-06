@@ -15,14 +15,14 @@ export const INSTALL_STEPS: InstallStep[] = [
     minutes: '2 min',
   },
   {
-    title: 'Deploy Ellipsis into your AWS account',
-    detail: 'We check your account is ready, then provision the platform with CloudFormation.',
-    minutes: '~75 min, mostly waiting on AWS',
-  },
-  {
     title: 'Connect GitHub',
     detail: "Create your company's own GitHub App (one click) and install it on your organization.",
     minutes: '10 min',
+  },
+  {
+    title: 'Deploy Ellipsis into your AWS account',
+    detail: 'We check your account is ready, then provision the platform with CloudFormation.',
+    minutes: '~75 min, mostly waiting on AWS',
   },
   {
     title: 'Connect Slack (optional)',
