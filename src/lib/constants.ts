@@ -12,7 +12,7 @@ export const VERSION: string =
 
 // Sent on every request to license.ellipsis.dev so we can tell which CLI
 // version an install is running from.
-export const USER_AGENT = `ellipsis-installer/${VERSION}`
+export const USER_AGENT = `ellipsis-cli/${VERSION}`
 
 // The bare default; ELLIPSIS_LICENSE_BASE_URL takes precedence (so the CLI
 // can be pointed at a local license API during development).
