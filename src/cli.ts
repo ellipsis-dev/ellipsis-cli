@@ -1,4 +1,5 @@
 import { Command } from 'commander'
+import { registerConnect } from './commands/connect'
 import { registerInit } from './commands/init'
 import { registerPing } from './commands/ping'
 import { VERSION } from './lib/constants'
@@ -11,6 +12,7 @@ program
   .version(VERSION)
 
 registerInit(program)
+registerConnect(program)
 registerPing(program)
 
 program.parseAsync(process.argv)
