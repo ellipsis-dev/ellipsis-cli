@@ -1,9 +1,10 @@
 import { execFile } from 'node:child_process'
 import type { Command } from 'commander'
-import { ApiError, registerInstall } from '../lib/api'
+import { ApiError, getDeploymentStatus, registerDeployment, startDeployment } from '../lib/api'
+import { quickCreateUrl, ROLE_STACK_NAME, stackConsoleUrl } from '../lib/aws_role'
 import { INSTALL_STEPS, renderChecklist } from '../lib/checklist'
 import { VERSION } from '../lib/constants'
-import { writeCredentials } from '../lib/credentials'
+import { readCredentials, writeCredentials } from '../lib/credentials'
 import { createAppViaManifest, writeGithubApp } from '../lib/github_app'
 import { currentDeploymentId } from '../lib/paths'
 import { ask, askYes, closePrompts, openPrompts } from '../lib/prompt'
@@ -93,6 +94,9 @@ async function continueFrom(deploymentId: string, state: InstallState): Promise<
       case 1:
         current = await stepConnectGithub(deploymentId, current)
         break
+      case 2:
+        current = await stepDeploy(deploymentId, current)
+        break
       default:
         console.log(
           `\nStep ${next + 1} (${INSTALL_STEPS[next].title}) is not built yet — coming soon.`,
@@ -140,7 +144,7 @@ async function stepStartTrial(): Promise<{ deploymentId: string; state: InstallS
   console.log('Starting your free trial...')
   let deploymentId: string
   try {
-    const res = await registerInstall({
+    const res = await registerDeployment({
       email,
       company,
       developer_count: developerCount,
@@ -148,10 +152,10 @@ async function stepStartTrial(): Promise<{ deploymentId: string; state: InstallS
       github_org: githubOrg,
       cli_version: VERSION,
     })
-    deploymentId = res.install_id
+    deploymentId = res.deployment_id
     writeCredentials({
-      install_id: res.install_id,
-      install_credential: res.install_credential,
+      deployment_id: res.deployment_id,
+      token: res.token,
       registered_at: new Date().toISOString(),
     })
   } catch (err) {
@@ -233,6 +237,124 @@ async function stepConnectGithub(deploymentId: string, state: InstallState): Pro
   writeState(deploymentId, updated)
   console.log()
   console.log(renderChecklist(2))
+  console.log()
+  return updated
+}
+
+const POLL_INTERVAL_MS = 10_000
+const POLL_TIMEOUT_MS = 20 * 60_000
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms))
+}
+
+/**
+ * Step 3: deploy Ellipsis into their AWS account.
+ *
+ * 1. The customer's AWS admin creates the cross-account role via a
+ *    CloudFormation quick-create link (prefilled with our operator ARN and
+ *    ExternalId = this deployment's id). The CLI holds no AWS credentials —
+ *    creation happens in their console, under their review.
+ * 2. We ask the license service to deploy; it verifies the role by actually
+ *    assuming it (424 until the stack finishes — just retry), then its worker
+ *    runs CloudFormation in their account.
+ * 3. Poll status to a terminal state.
+ * 4. The customer deletes the role stack — access revoked. Later operations
+ *    (upgrades, support) recreate it via the same link.
+ */
+async function stepDeploy(deploymentId: string, state: InstallState): Promise<InstallState> {
+  const creds = readCredentials()
+  if (!creds || creds.deployment_id !== deploymentId) {
+    throw new Error(
+      `No credentials for ${deploymentId} — re-run \`ellipsis init\` from Step 1.`,
+    )
+  }
+
+  const url = quickCreateUrl(deploymentId)
+  console.log(
+    `\nStep 3: ${INSTALL_STEPS[2].title}\n\n` +
+      'First, grant Ellipsis temporary deploy access to your AWS account\n' +
+      `(${state.aws_account_id}). Your browser will open an AWS CloudFormation\n` +
+      `page prefilled to create ONE IAM role (${ROLE_STACK_NAME}):\n\n` +
+      '  - Only Ellipsis can assume it, and only for THIS deployment\n' +
+      '    (the ExternalId in the trust policy is your deployment id).\n' +
+      '  - You can review every permission on that page before creating it.\n' +
+      '  - You will delete it at the end of this step; deleting it revokes\n' +
+      '    all Ellipsis access. Nothing else grants us entry.\n\n' +
+      'Creating IAM roles requires an AWS administrator — if that is not you,\n' +
+      'send them the link.\n',
+  )
+  await askYes('Ready to open the AWS console?')
+  openBrowser(url)
+  console.log(`\nIf the browser did not open, use:\n  ${url}\n`)
+  await askYes(`Done? (the ${ROLE_STACK_NAME} stack shows CREATE_COMPLETE)`)
+
+  // Ask the license service to deploy. A 424 means the role is not
+  // assumable yet (stack still creating, or created in the wrong account) —
+  // loop until the customer has it right.
+  console.log('\nStarting the deployment...')
+  for (;;) {
+    try {
+      const res = await startDeployment(deploymentId, creds.token)
+      console.log(`Deployment run ${res.run_id} started.`)
+      break
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 424) {
+        console.log(`\n${err.detail ?? 'The deploy role is not ready yet.'}\n`)
+        await askYes('Try again? (wait for the stack to reach CREATE_COMPLETE first)')
+        continue
+      }
+      if (err instanceof ApiError && err.status === 409) {
+        console.log('A deployment run is already in progress; watching it.')
+        break
+      }
+      throw err
+    }
+  }
+
+  console.log('Deploying into your account (this can take a few minutes)...')
+  const deadline = Date.now() + POLL_TIMEOUT_MS
+  let lastStatus = ''
+  for (;;) {
+    const status = await getDeploymentStatus(deploymentId, creds.token)
+    if (status.status !== lastStatus) {
+      lastStatus = status.status
+      console.log(`  status: ${status.status}`)
+    }
+    if (status.status === 'succeeded') break
+    if (status.status === 'failed') {
+      console.error(
+        `\nThe deployment failed: ${status.error ?? 'unknown error'}\n` +
+          'Fix the cause (or contact team@ellipsis.dev) and re-run `ellipsis init`\n' +
+          'to retry — retries are safe, the deploy is idempotent.',
+      )
+      process.exitCode = 1
+      return state
+    }
+    if (Date.now() > deadline) {
+      console.error(
+        '\nTimed out waiting for the deployment. Re-run `ellipsis init` to keep' +
+          ' watching, or contact team@ellipsis.dev.',
+      )
+      process.exitCode = 1
+      return state
+    }
+    await sleep(POLL_INTERVAL_MS)
+  }
+
+  console.log(
+    '\nDeployed. Last part: revoke the deploy access you granted.\n' +
+      `Delete the ${ROLE_STACK_NAME} stack in the CloudFormation console:\n` +
+      `  ${stackConsoleUrl()}\n\n` +
+      'Ellipsis keeps NO access to your account once it is deleted. Future\n' +
+      'upgrades will ask you to recreate it with the same one-click link.\n',
+  )
+  await askYes('Deleted (or choosing to keep it for managed support)?')
+
+  const updated: InstallState = { ...state, completed_steps: 3 }
+  writeState(deploymentId, updated)
+  console.log()
+  console.log(renderChecklist(3))
   console.log()
   return updated
 }
