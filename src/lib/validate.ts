@@ -34,6 +34,14 @@ export function validateAwsAccountId(input: string): string | Error {
   return id
 }
 
+export function validateDomain(input: string): string | Error {
+  const domain = input.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/+$/, '')
+  if (!/^[a-z0-9][a-z0-9.-]+\.[a-z]{2,}$/.test(domain)) {
+    return new Error('That does not look like a domain, e.g. ellipsis.acme.com.')
+  }
+  return domain
+}
+
 export function validateGithubOrg(input: string): string | Error {
   let org = input.trim()
   // Accept a pasted URL and strip it down to the login.
